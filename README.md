@@ -1,179 +1,101 @@
-# Canton hackathon toolkit
+# D1: a spend-limited wallet for an AI agent
 
-Get to your first Canton transaction without installing much.
+Solo entry, Cantor8 Canton hackathon. Built on the Daml track, running on
+DevNet with real Canton Coin.
 
-`c8lab.py` is Python 3, **stdlib only**, no `pip install`. That is deliberate:
-some laptops are locked down and you do not want to debug pip on the day.
+The premise from the brief: giving an agent a hot key is indefensible, because
+if the agent goes wrong there is nothing between it and your money. This is the
+wallet an agent should have instead. The agent holds a *choice on a contract*,
+not a key. The cap, the allow-list and the expiry are enforced in Daml, so
+there is no API to go around.
 
-It runs against two targets:
+## Run it
 
-- **LocalNet**, a whole Canton network in Docker on your laptop. The default.
-- **DevNet**, the shared Cantor8 node. Set four environment variables.
+```bash
+source ~/devnet.env
+python3 demo.py
+```
+
+Sets up a fresh mandate, runs six cases, prints a table. Four of the six must
+fail on the ledger. Last clean run: 6/6.
+
+Offline, no network needed:
+
+```bash
+cd daml-starter && daml build && daml test
+```
+
+## The line that does the work
+
+`daml-starter/daml/Mandate.daml`, inside the `Charge` choice:
+
+```daml
+assertMsg "mandate expired"             (now < expiresAt)
+assertMsg "amount must be positive"     (amount > 0.0)
+assertMsg "payee not on the allow-list" (payee `elem` allowed)
+assertMsg "charge would exceed the cap" (spent + amount <= cap)
+```
+
+The cap is cumulative (`spent + amount`), not per-charge. `ensure spent <= cap`
+on the template means the ledger will not create a mandate that violates it on
+any path.
+
+`Revoke` is consuming and controlled by `owner` alone, so the agent cannot
+block or delay it. Afterwards the agent gets `CONTRACT_NOT_FOUND`: the
+authority is gone, not merely refused.
+
+## What I attacked, and what the ledger said
+
+| Attack | Result |
+| --- | --- |
+| Charge 5.0 against a 3.0 cap | `DAML_FAILURE ... charge would exceed the cap` |
+| Pay a party not on the allow-list | `DAML_FAILURE ... payee not on the allow-list` |
+| Charge after revocation | `CONTRACT_NOT_FOUND` |
+| Owner using the agent's choice | fails, wrong controller |
+| Charge after expiry | fails (Daml Script, `passTime`) |
+| Audit trail after revocation | survives, still queryable |
+
+## Composed settlement
+
+`agent_wallet.py` submits two exercises in one command list: `Charge` on the
+mandate, and `TransferFactory_Transfer` on the token factory with the
+registry's disclosed contracts attached. Canton commits both or neither, so
+there is no ordering in which the money moves and the cap check does not run.
+
+## The agent is a language model
+
+`mcp_wallet.py` is an MCP server, stdlib only, no dependencies. Four tools:
+`check_budget`, `pay`, `statement`, `create_mandate`.
+
+`pay` validates nothing. It passes whatever the model asks for to the ledger
+and reports the answer, deliberately: a cap enforced in the tool is a cap
+anyone reaching the ledger directly can skip.
+
+```
+-> pay({'payee': 'shop', 'amount': '99.0'})
+<- REFUSED BY THE LEDGER: charge would exceed the cap. The payment did not
+   happen. This was not my decision and I cannot override it.
+```
+
+Wire it into an MCP client with:
+
+```json
+{ "command": "python3", "args": ["/home/<you>/hackathon-toolkit/mcp_wallet.py"] }
+```
+
+## Files
 
 | File | What |
-|---|---|
-| `CHALLENGES.md` | The problems, and what to build |
-| `SETUP.md` | Install LocalNet, and the Daml toolchain if you need it |
-| `API.md` | Tested cheat sheet of the APIs you will use, and what needs a token |
-| `TROUBLESHOOTING.md` | Every error we actually hit, and the fix |
-| `c8lab.py` | The lab |
-| `daml-starter/` | Working Daml to copy from, including the mandate task |
+| --- | --- |
+| `daml-starter/daml/Mandate.daml` | The mandate, the charge record, the rules |
+| `daml-starter/daml/Test.daml` | Four Daml Script tests, run with `daml test` |
+| `agent_wallet.py` | Composed settlement: cap check + transfer, one transaction |
+| `demo.py` | Six cases end to end against DevNet |
+| `mcp_wallet.py` | MCP server so a language model can hold the wallet |
+| `HONESTY.md` | What is enforced, what is narrow, what broke |
 
-Start with `SETUP.md`, come back here.
+## Read HONESTY.md
 
-**Looking for the problems?** They are in [`CHALLENGES.md`](CHALLENGES.md).
-
-## The lab
-
-Six steps. This is the shape of every Canton app.
-
-```
-1. Get a token                    the API is authenticated
-2. Allocate a party               your identity on the ledger
-3. Set up a TransferPreapproval   so people can pay you directly
-4. Read your balance from the ACS zero, at first
-5. Get some Canton Coin           LocalNet mints it, on DevNet ask the team
-6. Send a token standard transfer to another party
-```
-
-### Run it
-
-```bash
-python3 c8lab.py                          # check everything, list parties, balances
-python3 c8lab.py party myteam             # step 2
-python3 c8lab.py preapproval <party>      # step 3
-python3 c8lab.py holdings <party>         # steps 4 and 5
-python3 c8lab.py transfer <from> <to> 25  # step 6
-python3 c8lab.py accept <instructionCid> <to>   # if step 6 returned an offer
-python3 c8lab.py grant <user> <party>           # fix a 403
-```
-
-`check` first, always. It verifies auth, the ledger, your parties and their
-balances. It does **not** check that the registry is reachable, that you have
-act-as rights on every party, or that a preapproval has been accepted. So a
-clean `check` means the basics are fine, not that everything is.
-
-### What good output looks like
-
-```
-base       http://localhost:2975
-mode       LocalNet / unsafe HS256
-token      ok
-ledger end 104
-local parties (3):
-    app_user_cantor8-hackathon-1::1220...
-    participant::1220...
-
-holdings for app_user_cantor8-hackathon-1: 1 contract(s), total 4220.16
-    {'amount': '4220.16', 'instrument': 'Amulet', 'locked': False}
-```
-
-`Amulet` is Canton Coin. Amulet is the name in the Daml code, Canton Coin is the
-name in the marketing. Same thing.
-
-On LocalNet the balance grows on its own as mining rounds tick over and pay the
-validator. Nothing is broken.
-
-## Three things worth understanding
-
-### Your balance is not a number
-
-It is a set of contracts. `total 4220.16` is the sum of the `Holding` contracts
-you can see. A transfer archives the ones it spends and creates new ones, like
-handing over a note and getting change.
-
-This is why two transfers at the same time can fight over the same holding.
-One wins, the other fails, and both pay for the traffic.
-
-### A token is a Daml package plus a web service
-
-Step 6 is two phases, and the first surprises everyone:
-
-```
-1. Ask the registry for a transfer factory and a choice context.
-2. Exercise TransferFactory_Transfer, attaching what it gave you.
-```
-
-Why the registry exists: privacy. You cannot see the issuer's configuration
-contracts, so it hands them to you as **disclosed contracts**, valid for that one
-transaction. On LocalNet the registry is the scan app; ours returned five
-disclosed contracts and a context with `amulet-rules`, `open-round`,
-`transfer-preapproval` and `external-party-config-state`.
-
-If you skip this and try to build the transfer by hand, it will not work, and
-the error will not tell you why.
-
-### `transferKind` tells you which flow you are in
-
-The registry answers with one of:
-
-- **`direct`**: the receiver has a live `TransferPreapproval`. Money moves
-  immediately.
-- **`offer`**: no preapproval. A `TransferInstruction` is created and the
-  receiver has to accept it. Their balance does **not** change until they do.
-- **`self`**: sender and receiver are the same party.
-
-We saw both. A party with an accepted preapproval got `direct` and received the
-money straight away. A party with no preapproval got `offer`, the transfer
-succeeded, and the balance stayed empty until we accepted it.
-
-`transfer` prints the `instructionCid` and the exact accept command when it
-returns an offer. Run it and the money moves.
-
-**So if you send money and the receiver sees nothing, check `transferKind`
-before you debug anything else.** Preapproval acceptance is not instant: you
-create the proposal, and the validator's automation accepts it a moment later.
-
-## The functions
-
-Import it, do not just use the CLI.
-
-| Function | Does |
-|---|---|
-| `token(sub)` | HS256 on LocalNet, Keycloak on DevNet |
-| `call(path, body, sub)` | Any Ledger API call. Prints the real error on failure. |
-| `ledger_end()` | Current offset |
-| `parties()` / `local_parties()` | What the node knows, and what it hosts |
-| `allocate_party(hint)` | Allocate, or reuse if it exists |
-| `grant_act_as(user, party)` | Fix a 403 |
-| `holdings(party)` | Balances, via the interface filter |
-| `submit(cmds, act_as, disclosed)` | Any command, with disclosed contracts |
-| `create_preapproval(me, provider)` | Step 3 |
-| `registry(path, body)` | Call the token registry |
-| `transfer(from, to, amount)` | Step 6, both phases |
-| `check()` | Run this first when something is broken |
-
-Only reuse parties where `isLocal` is true. A node lists parties it has heard
-about from the network, including ones hosted elsewhere that it cannot submit
-for. Using one of those gives you
-`NO_SYNCHRONIZER_ON_WHICH_ALL_SUBMITTERS_CAN_SUBMIT`.
-
-## Running against DevNet
-
-```bash
-export C8_BASE=https://api.validator.dev.digik.cantor8.tech/api/ledger
-export C8_IDP=https://auth.dev.digik.cantor8.tech
-export C8_CLIENT_ID=hackathon
-export C8_CLIENT_SECRET=<ask the Cantor8 team>
-export C8_REGISTRY=<registry base url>       # needed for transfers
-python3 c8lab.py check
-```
-
-Setting `C8_IDP` switches from a self-signed LocalNet token to a real Keycloak
-client-credentials token. Everything else is the same.
-
-For DevNet you will also need `C8_REGISTRY` pointing at the Cantor8 registry, and
-Canton Coin has to be sent to you: give the team your party ID.
-
-**Not yet verified on DevNet.** Party allocation there may need the
-external-party topology flow rather than `POST /v2/parties`. If it fails at step
-2, that is why.
-
-## Docs
-
-```
-Canton docs, has a chatbot   https://docs.canton.network
-Ledger API                   https://docs.canton.network/sdks-tools/api-reference/ledger-api
-Validator Admin API          https://docs.canton.network/sdks-tools/api-reference/admin-api
-Token standard               https://docs.canton.network/appdev/deep-dives/token-standard
-```
+It covers what is not finished, a ledger/application drift I hit during
+development and have not fixed, and two toolkit bugs that cost me an afternoon.
+Shortest useful summary of where this actually stands.
