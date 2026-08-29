@@ -45,3 +45,52 @@ testMandate = script do
   submit alice do exerciseCmd m Revoke
   submitMustFail merchant do exerciseCmd m Charge with amount = 1.0; payee = merchant
   pure ()
+
+-- The agent cannot pay a party that is not on the allow-list, and cannot
+-- charge after the mandate expires. Both fail on the ledger.
+testAllowListAndExpiry : Script ()
+testAllowListAndExpiry = script do
+  alice    <- allocateParty "Alice2"
+  agent    <- allocateParty "Agent"
+  shop     <- allocateParty "Shop"
+  stranger <- allocateParty "Stranger"
+  now      <- getTime
+  let deadline = addRelTime now (hours 24)
+
+  prop <- submit alice do
+    createCmd MandateProposal with
+      owner = alice; spender = agent; cap = 100.0
+      allowed = [shop]; expiresAt = deadline
+  m <- submit agent do exerciseCmd prop Accept
+
+  (m, _) <- submit agent do exerciseCmd m Charge with amount = 10.0; payee = shop
+  submitMustFail agent do exerciseCmd m Charge with amount = 10.0; payee = stranger
+
+  passTime (hours 25)
+  submitMustFail agent do exerciseCmd m Charge with amount = 10.0; payee = shop
+  pure ()
+
+-- Every charge leaves a record the owner can read, and revoking the mandate
+-- does not erase it.
+testAuditSurvivesRevoke : Script ()
+testAuditSurvivesRevoke = script do
+  alice <- allocateParty "Alice3"
+  agent <- allocateParty "Agent3"
+  shop  <- allocateParty "Shop3"
+  now   <- getTime
+  let deadline = addRelTime now (hours 24)
+
+  prop <- submit alice do
+    createCmd MandateProposal with
+      owner = alice; spender = agent; cap = 100.0
+      allowed = [shop]; expiresAt = deadline
+  m <- submit agent do exerciseCmd prop Accept
+
+  (m, _) <- submit agent do exerciseCmd m Charge with amount = 20.0; payee = shop
+  (m, _) <- submit agent do exerciseCmd m Charge with amount = 30.0; payee = shop
+
+  submit alice do exerciseCmd m Revoke
+
+  records <- query @ChargeRecord alice
+  assertMsg "audit trail must survive revocation" (length records == 2)
+  pure ()
