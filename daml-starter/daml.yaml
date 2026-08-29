@@ -1,5 +1,5 @@
 sdk-version: 3.4.10
-name: daml-starter
+name: samrath-agent-wallet
 source: daml
 version: 0.0.1
 dependencies:

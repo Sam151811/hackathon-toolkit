@@ -6,7 +6,7 @@ cap because both exercises are in the same transaction.
 import datetime
 import c8lab
 
-MANDATE = "#daml-starter:Mandate:Mandate"
+MANDATE = "#samrath-agent-wallet:Mandate:Mandate"
 
 
 def charge_and_pay(mandate_cid, agent, sender, receiver, amount,
