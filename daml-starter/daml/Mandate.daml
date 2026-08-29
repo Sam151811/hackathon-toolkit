@@ -21,6 +21,7 @@ template Mandate
     spender  : Party      -- merchant, or agent
     cap      : Decimal    -- total they may spend over the mandate's life
     spent    : Decimal    -- how much so far
+    allowed  : [Party]    -- who the spender may pay
     expiresAt : Time
   where
     ensure cap > 0.0 && spent >= 0.0 && spent <= cap
@@ -30,16 +31,23 @@ template Mandate
     signatory owner, spender
 
     -- Spend within the mandate. No owner signature needed, that is the point.
-    choice Charge : ContractId Mandate
-      with amount : Decimal
+    choice Charge : (ContractId Mandate, ContractId ChargeRecord)
+      with
+        amount : Decimal
+        payee  : Party
       controller spender
       do
         now <- getTime
-        -- Deadlines are NOT enforced for you. Check them yourself.
         assertMsg "mandate expired" (now < expiresAt)
         assertMsg "amount must be positive" (amount > 0.0)
+        assertMsg "payee not on the allow-list" (payee `elem` allowed)
         assertMsg "charge would exceed the cap" (spent + amount <= cap)
-        create this with spent = spent + amount
+        m <- create this with spent = spent + amount
+        r <- create ChargeRecord with
+               owner; spender; payee; amount
+               remaining = cap - (spent + amount)
+               chargedAt = now
+        pure (m, r)
 
     -- The owner can always stop it, and the spender cannot block that.
     choice Revoke : ()
@@ -63,6 +71,7 @@ template MandateProposal
     owner    : Party
     spender  : Party
     cap      : Decimal
+    allowed  : [Party]
     expiresAt : Time
   where
     signatory owner
@@ -70,8 +79,20 @@ template MandateProposal
 
     choice Accept : ContractId Mandate
       controller spender
-      do create Mandate with owner; spender; cap; spent = 0.0; expiresAt
+      do create Mandate with owner; spender; cap; spent = 0.0; allowed; expiresAt
 
     choice Reject : ()
       controller spender
       do pure ()
+
+template ChargeRecord
+  with
+    owner     : Party
+    spender   : Party
+    payee     : Party
+    amount    : Decimal
+    remaining : Decimal
+    chargedAt : Time
+  where
+    signatory owner, spender
+    observer payee
