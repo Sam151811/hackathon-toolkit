@@ -12,6 +12,21 @@ import sys
 
 import c8lab
 import agent_wallet
+import time
+
+_submit = c8lab.submit
+
+def submit_retry(*a, **kw):
+    for i in range(4):
+        try:
+            return _submit(*a, **kw)
+        except c8lab.LabError as e:
+            if "503" not in str(e) or i == 3:
+                raise
+            print(f"        (DevNet busy, retry {i+1})")
+            time.sleep(5)
+
+c8lab.submit = submit_retry
 
 PKG = "#samrath-agent-wallet:Mandate"
 PROPOSAL = PKG + ":MandateProposal"
